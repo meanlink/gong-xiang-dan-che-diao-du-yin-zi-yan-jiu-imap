@@ -4,7 +4,8 @@
 
 ## 模块与业务流程
 数据接入（JSON/CSV、字段验证、批次指纹）→ 参数化分析（异步 Python worker）→ 结果复核（指标、图形、明细、解释、批准）→ 定时分发（本地收件箱、CSV/JSON、SHA256）；另有业务总览和审计轨迹。
-三个贯穿全栈的实体：Dataset 数据批次、Job 分析任务、Report 分发计划；辅助 User、Audit、Delivery。
+研究链：把筛选出的补车候选串成多级复核有向无环图。各节点设置提前量与偏相关门槛，后继只研究所有前置共同通过的站点；启动时冻结样本快照、参数与依赖，环路拒绝启动，空候选明确结束；前置失败只阻塞后代，补跑前置使后代失效重算且在途旧结果不写回；整链完成才可由负责人批准，批准时固定各级采用结果为简报，简报才可进入定时分发。
+三个贯穿全栈的实体：Dataset 数据批次、Job 分析任务、Report 分发计划；研究链 Chain/ChainNode/ChainEdge 与辅助 User、Audit、Delivery。
 
 ## 快速启动
 ```bash
@@ -29,11 +30,11 @@ Python 3.12 / FastAPI / SQLAlchemy / NumPy / SciPy / scikit-learn；PostgreSQL 1
 ## 目录与工程约定
 backend/src/{models,schemas,services,routes,controllers,middlewares,constants,config,utils}；backend/scripts/seed_demo.py；backend/migrations/initial.py。
 frontend/src/{api,stores,types,components/common,hooks,pages,router,utils,constants}。
-Role 枚举：admin/analyst/viewer；JobStatus：queued/running/completed/failed。后端 backend/src/constants/enums.py，前端 frontend/src/constants/enums.js；路由权限在 middlewares/auth.py；页面按相同角色控制操作入口。
+Role 枚举：admin/analyst/viewer；JobStatus：queued/running/completed/failed；ChainStatus：draft/running/completed/failed；ChainNodeStatus：pending/running/completed/empty/failed/blocked。后端 backend/src/constants/enums.py，前端 frontend/src/constants/enums.js；路由权限在 middlewares/auth.py；页面按相同角色控制操作入口。
 
 ## 环境变量与 Docker
 COMPOSE_PROJECT_NAME=cycle-factors；FRONTEND_PORT=18202；BACKEND_PORT=19202；DB_PORT=17702；DB_PASSWORD、JWT_SECRET 见 .env.example；SEED_DEMO 默认 true。共享命名产物卷供后端下载与 worker 写入，数据库/Redis 各持久卷。
-恰好五服务均有健康检查。Redis 队列加 SQL 排队状态兜底；worker 按 next_run 生成本地收件箱文件。周期 60 秒至 30 天。分发结果为批准分析的固定快照；若需新数据重新计算并建立新计划。当前不连接邮件或企业聊天。
+恰好五服务均有健康检查。Redis 队列加 SQL 排队状态兜底；worker 按 next_run 生成本地收件箱文件，研究链节点经 `chain:queue` 与运行态扫描按依赖推进，崩溃恢复将 running 节点重置待领。周期 60 秒至 30 天。分发结果为批准分析或批准研究链简报的固定快照；若需新数据重新计算并建立新计划。当前不连接邮件或企业聊天。
 错误响应、请求编号、Redis 每 IP 每分钟 240 次限流、JWT 和数据库操作审计。演示密钥与密码仅供本机模拟；生产部署前配置独立密钥与账号。
 
 ## 数据与验收

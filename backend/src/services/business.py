@@ -32,6 +32,68 @@ def seed_records():
     return rows
 
 
+def _station_pairs(values, lag):
+    """单站配对：values 为 [period, commute, arrivals, demand]，返回 (arrivals_t, demand_t+lag, commute_t+lag) 三元组。"""
+    values = sorted(values, key=lambda x: x[0])
+    by_period = {v[0]: v for v in values}
+    if len(by_period) != len(values):
+        raise ValueError("同站同一时段不得重复")
+    local = [(v[2], by_period[v[0] + lag][3], by_period[v[0] + lag][1]) for v in values if v[0] + lag in by_period]
+    if len(local) < 8:
+        raise ValueError("每个选定站点至少需要 8 对可匹配时段")
+    return local
+
+
+def _partial_stats(local):
+    """对配对三元组计算控制通勤后的偏相关。"""
+    x, y, control = np.array(local).T
+    design = np.column_stack([np.ones(len(x)), control])
+    rx, ry = x - design @ np.linalg.lstsq(design, x, rcond=None)[0], y - design @ np.linalg.lstsq(design, y, rcond=None)[0]
+    if min(float(np.std(rx)), float(np.std(ry))) < 1e-10:
+        raise ValueError("残差无变异，无法计算偏相关")
+    partial = float(np.corrcoef(rx, ry)[0, 1])
+    original = float(np.corrcoef(x, y)[0, 1])
+    t = partial * math.sqrt((len(local) - 3) / max(1e-15, 1 - partial ** 2))
+    p = float(2 * stats.t.sf(abs(t), len(local) - 3))
+    return {"pairs": len(local), "raw": round(original, 5), "partial": round(partial, 5), "p": float(f"{p:.6g}")}
+
+
+def evaluate_chain_node(records, stations, lag, threshold):
+    """研究链单节点：仅评估候选站点，逐站给出偏相关与门槛判定。
+
+    数据行损坏或全部候选都无法评估时抛 ValueError（节点失败）；
+    单站统计问题只记入该站 note（站点被筛除，节点继续）。
+    """
+    groups = {}
+    for row in records:
+        try:
+            station = str(row["station"])
+            vals = [float(row[k]) for k in ("period", "commute", "arrivals", "demand")]
+            if not all(math.isfinite(x) for x in vals) or vals[2] < 0 or vals[3] < 0:
+                raise ValueError()
+            groups.setdefault(station, []).append(vals)
+        except (KeyError, ValueError, TypeError):
+            raise ValueError("冻结样本含非法观测行，节点无法评估")
+    results = []
+    for station in stations:
+        values = groups.get(station, [])
+        if not values:
+            results.append({"station": station, "pairs": 0, "raw": None, "partial": None, "p": None, "passed": False, "note": "冻结样本中没有该站点观测"})
+            continue
+        try:
+            stats = _partial_stats(_station_pairs(values, lag))
+        except ValueError as e:
+            results.append({"station": station, "pairs": 0, "raw": None, "partial": None, "p": None, "passed": False, "note": str(e)})
+            continue
+        passed = abs(stats["partial"]) >= threshold
+        note = "" if passed else f"偏相关 |r|={abs(stats['partial']):.3f} 低于门槛 {threshold:g}"
+        results.append({"station": station, **stats, "passed": passed, "note": note})
+    if stations and not any(r["partial"] is not None for r in results):
+        raise ValueError("所有候选站点均无法评估：" + (results[0]["note"] or "未知原因"))
+    return {"candidates": list(stations), "lag": lag, "threshold": threshold,
+            "stations": results, "passed": [r["station"] for r in results if r["passed"]]}
+
+
 def analyze(records, params):
     try:
         lag_number = float(params.get("lag", 1))
@@ -56,24 +118,10 @@ def analyze(records, params):
     paired = []
     rows, warnings = [], []
     for station, values in sorted(groups.items()):
-        values.sort(key=lambda x: x[0])
-        by_period = {v[0]: v for v in values}
-        if len(by_period) != len(values):
-            raise ValueError("同站同一时段不得重复")
-        local = [(v[2], by_period[v[0] + lag][3], by_period[v[0] + lag][1]) for v in values if v[0] + lag in by_period]
-        if len(local) < 8:
-            raise ValueError("每个选定站点至少需要 8 对可匹配时段")
+        local = _station_pairs(values, lag)
+        stats_row = _partial_stats(local)
         paired.extend(local)
-        x, y, control = np.array(local).T
-        design = np.column_stack([np.ones(len(x)), control])
-        rx, ry = x - design @ np.linalg.lstsq(design, x, rcond=None)[0], y - design @ np.linalg.lstsq(design, y, rcond=None)[0]
-        if min(float(np.std(rx)), float(np.std(ry))) < 1e-10:
-            raise ValueError("残差无变异，无法计算偏相关")
-        partial = float(np.corrcoef(rx, ry)[0, 1])
-        original = float(np.corrcoef(x, y)[0, 1])
-        t = partial * math.sqrt((len(local) - 3) / max(1e-15, 1 - partial ** 2))
-        p = float(2 * stats.t.sf(abs(t), len(local) - 3))
-        rows.append({"station": station, "pairs": len(local), "raw": round(original, 5), "partial": round(partial, 5), "p": float(f"{p:.6g}")})
+        rows.append({"station": station, **stats_row})
     if not paired:
         raise ValueError("没有符合所选站点的数据")
     top = max(rows, key=lambda r: abs(r["partial"]))

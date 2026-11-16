@@ -8,3 +8,15 @@ class JobStatus(str, Enum):
     running = 'running'
     completed = 'completed'
     failed = 'failed'
+class ChainStatus(str, Enum):
+    draft = 'draft'
+    running = 'running'
+    completed = 'completed'
+    failed = 'failed'
+class ChainNodeStatus(str, Enum):
+    pending = 'pending'
+    running = 'running'
+    completed = 'completed'
+    empty = 'empty'
+    failed = 'failed'
+    blocked = 'blocked'
